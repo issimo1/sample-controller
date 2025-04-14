@@ -135,5 +135,11 @@ func (h *handler) subSvc(c *gin.Context) {
 			}
 		}
 	}
+	if len(errors) > 0 {
+		c.JSON(400, gin.H{
+			"message": errors.ToAggregate().Error(),
+		})
+		return
+	}
 	c.JSON(200, nil)
 }
