@@ -19,13 +19,14 @@ limitations under the License.
 package fake
 
 import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/testing"
 	clientset "k8s.io/sample-controller/pkg/generated/clientset/versioned"
+	lwcontrollerv1alpha1 "k8s.io/sample-controller/pkg/generated/clientset/versioned/typed/lwcontroller/v1alpha1"
+	fakelwcontrollerv1alpha1 "k8s.io/sample-controller/pkg/generated/clientset/versioned/typed/lwcontroller/v1alpha1/fake"
 	samplecontrollerv1alpha1 "k8s.io/sample-controller/pkg/generated/clientset/versioned/typed/samplecontroller/v1alpha1"
 	fakesamplecontrollerv1alpha1 "k8s.io/sample-controller/pkg/generated/clientset/versioned/typed/samplecontroller/v1alpha1/fake"
 )
@@ -50,13 +51,9 @@ func NewSimpleClientset(objects ...runtime.Object) *Clientset {
 	cs.discovery = &fakediscovery.FakeDiscovery{Fake: &cs.Fake}
 	cs.AddReactor("*", "*", testing.ObjectReaction(o))
 	cs.AddWatchReactor("*", func(action testing.Action) (handled bool, ret watch.Interface, err error) {
-		var opts metav1.ListOptions
-		if watchActcion, ok := action.(testing.WatchActionImpl); ok {
-			opts = watchActcion.ListOptions
-		}
 		gvr := action.GetResource()
 		ns := action.GetNamespace()
-		watch, err := o.Watch(gvr, ns, opts)
+		watch, err := o.Watch(gvr, ns)
 		if err != nil {
 			return false, nil, err
 		}
@@ -87,6 +84,11 @@ var (
 	_ clientset.Interface = &Clientset{}
 	_ testing.FakeClient  = &Clientset{}
 )
+
+// LwcontrollerV1alpha1 retrieves the LwcontrollerV1alpha1Client
+func (c *Clientset) LwcontrollerV1alpha1() lwcontrollerv1alpha1.LwcontrollerV1alpha1Interface {
+	return &fakelwcontrollerv1alpha1.FakeLwcontrollerV1alpha1{Fake: &c.Fake}
+}
 
 // SamplecontrollerV1alpha1 retrieves the SamplecontrollerV1alpha1Client
 func (c *Clientset) SamplecontrollerV1alpha1() samplecontrollerv1alpha1.SamplecontrollerV1alpha1Interface {

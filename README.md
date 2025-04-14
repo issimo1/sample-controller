@@ -160,3 +160,4 @@ https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/sample-c
 Code changes are made in that location, merged into k8s.io/kubernetes and
 later synced here.
 
+# sample-controller

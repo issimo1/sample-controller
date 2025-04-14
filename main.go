@@ -17,14 +17,19 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"flag"
-	"time"
-
+	"github.com/gin-gonic/gin"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	mtcontroller "k8s.io/sample-controller/pkg/controller"
+	mtinformer "k8s.io/sample-controller/pkg/informers"
+	"k8s.io/sample-controller/pkg/server"
 	"k8s.io/sample-controller/pkg/signals"
+	"net/http"
+	"time"
 	// Uncomment the following line to load the gcp plugin (only required to authenticate against GKE clusters).
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 
@@ -40,6 +45,8 @@ var (
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
+
+	r := gin.Default()
 
 	// set up signals so we handle the shutdown signal gracefully
 	ctx := signals.SetupSignalHandler()
@@ -68,17 +75,50 @@ func main() {
 
 	controller := NewController(ctx, kubeClient, exampleClient,
 		kubeInformerFactory.Apps().V1().Deployments(),
-		exampleInformerFactory.Samplecontroller().V1alpha1().Foos())
+		exampleInformerFactory.Samplecontroller().V1alpha1().Foos(),
+		exampleInformerFactory.Lwcontroller().V1alpha1().Lws())
 
 	// notice that there is no need to run Start methods in a separate goroutine. (i.e. go kubeInformerFactory.Start(ctx.done())
 	// Start method is non-blocking and runs all registered informers in a dedicated goroutine.
 	kubeInformerFactory.Start(ctx.Done())
 	exampleInformerFactory.Start(ctx.Done())
+	svcController, err := mtcontroller.NewServiceController(cfg)
+	svcController1, err := mtinformer.NewServiceController(cfg)
+	if err != nil {
+		logger.Error(err, "Error building ServiceController")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
+	if err != nil {
+		logger.Error(err, "Error building ServiceController")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
+	start := make(chan struct{})
+	go svcController.Run(ctx)
+	go svcController1.Run(start, logger)
+
+	server.InstallHandler(r.Group(""), kubeClient)
+	serve := &http.Server{
+		Addr:    ":8080",
+		Handler: r,
+	}
+	go func() {
+		if err := serve.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error(err, "Error starting HTTP serve")
+		}
+	}()
 
 	if err = controller.Run(ctx, 2); err != nil {
 		logger.Error(err, "Error running controller")
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
+	start <- struct{}{}
+	//stop := make(chan os.Signal, 1)
+	//signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	//<-stop
+	//if err := serve.Shutdown(ctx); err != nil {
+	//	logger.Error(err, "Error shutting down server")
+	//}
+	//logger.Info("Server stopped")
 }
 
 func init() {

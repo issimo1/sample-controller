@@ -35,6 +35,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2/ktesting"
 
+	lwController "k8s.io/sample-controller/pkg/apis/lwcontroller/v1alpha1"
 	samplecontroller "k8s.io/sample-controller/pkg/apis/samplecontroller/v1alpha1"
 	"k8s.io/sample-controller/pkg/generated/clientset/versioned/fake"
 	informers "k8s.io/sample-controller/pkg/generated/informers/externalversions"
@@ -51,7 +52,9 @@ type fixture struct {
 	client     *fake.Clientset
 	kubeclient *k8sfake.Clientset
 	// Objects to put in the store.
-	fooLister        []*samplecontroller.Foo
+	fooLister []*samplecontroller.Foo
+
+	lwLister         []*lwController.Lw
 	deploymentLister []*apps.Deployment
 	// Actions expected to happen on the client.
 	kubeactions []core.Action
@@ -83,6 +86,21 @@ func newFoo(name string, replicas *int32) *samplecontroller.Foo {
 	}
 }
 
+func newLw(name, image string, replicas *int32) *lwController.Lw {
+	return &lwController.Lw{
+		TypeMeta: metav1.TypeMeta{APIVersion: lwController.SchemeGroupVersion.String()},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: metav1.NamespaceDefault,
+		},
+		Spec: lwController.LwSpec{
+			//DeploymentName: fmt.Sprintf("%s-deployment", name),
+			//Image:          image,
+			Replicas: replicas,
+		},
+	}
+}
+
 func (f *fixture) newController(ctx context.Context) (*Controller, informers.SharedInformerFactory, kubeinformers.SharedInformerFactory) {
 	f.client = fake.NewSimpleClientset(f.objects...)
 	f.kubeclient = k8sfake.NewSimpleClientset(f.kubeobjects...)
@@ -91,9 +109,10 @@ func (f *fixture) newController(ctx context.Context) (*Controller, informers.Sha
 	k8sI := kubeinformers.NewSharedInformerFactory(f.kubeclient, noResyncPeriodFunc())
 
 	c := NewController(ctx, f.kubeclient, f.client,
-		k8sI.Apps().V1().Deployments(), i.Samplecontroller().V1alpha1().Foos())
+		k8sI.Apps().V1().Deployments(), i.Samplecontroller().V1alpha1().Foos(), i.Lwcontroller().V1alpha1().Lws())
 
 	c.foosSynced = alwaysReady
+	c.lwSynced = alwaysReady
 	c.deploymentsSynced = alwaysReady
 	c.recorder = &record.FakeRecorder{}
 
@@ -105,6 +124,9 @@ func (f *fixture) newController(ctx context.Context) (*Controller, informers.Sha
 		k8sI.Apps().V1().Deployments().Informer().GetIndexer().Add(d)
 	}
 
+	for _, l := range f.lwLister {
+		i.Lwcontroller().V1alpha1().Lws().Informer().GetIndexer().Add(l)
+	}
 	return c, i, k8sI
 }
 
@@ -122,14 +144,12 @@ func (f *fixture) runController(ctx context.Context, fooRef cache.ObjectName, st
 		i.Start(ctx.Done())
 		k8sI.Start(ctx.Done())
 	}
-
 	err := c.syncHandler(ctx, fooRef)
 	if !expectError && err != nil {
 		f.t.Errorf("error syncing foo: %v", err)
 	} else if expectError && err == nil {
 		f.t.Error("expected error syncing foo, got nil")
 	}
-
 	actions := filterInformerActions(f.client.Actions())
 	for i, action := range actions {
 		if len(f.actions) < i+1 {
@@ -217,6 +237,8 @@ func filterInformerActions(actions []core.Action) []core.Action {
 		if len(action.GetNamespace()) == 0 &&
 			(action.Matches("list", "foos") ||
 				action.Matches("watch", "foos") ||
+				action.Matches("list", "lws") ||
+				action.Matches("watch", "lws") ||
 				action.Matches("list", "deployments") ||
 				action.Matches("watch", "deployments")) {
 			continue
@@ -240,8 +262,18 @@ func (f *fixture) expectUpdateFooStatusAction(foo *samplecontroller.Foo) {
 	f.actions = append(f.actions, action)
 }
 
+func (f *fixture) expectUpdateLwStatusAction(lw *lwController.Lw) {
+	action := core.NewUpdateSubresourceAction(schema.GroupVersionResource{Resource: "lws"}, "status", lw.Namespace, lw)
+	f.actions = append(f.actions, action)
+}
+
 func getRef(foo *samplecontroller.Foo, t *testing.T) cache.ObjectName {
 	ref := cache.MetaObjectToName(foo)
+	return ref
+}
+
+func getRef1(lw *lwController.Lw, t *testing.T) cache.ObjectName {
+	ref := cache.MetaObjectToName(lw)
 	return ref
 }
 
@@ -260,58 +292,147 @@ func TestCreatesDeployment(t *testing.T) {
 	f.run(ctx, getRef(foo, t))
 }
 
-func TestDoNothing(t *testing.T) {
+func TestCreatesLws(t *testing.T) {
 	f := newFixture(t)
-	foo := newFoo("test", int32Ptr(1))
+	lw := newLw("test", "nginx", int32Ptr(1))
 	_, ctx := ktesting.NewTestContext(t)
 
-	d := newDeployment(foo)
+	f.lwLister = append(f.lwLister, lw)
+	f.objects = append(f.objects, lw)
 
-	f.fooLister = append(f.fooLister, foo)
-	f.objects = append(f.objects, foo)
+	deploy := newLwDeployment(lw)
+	f.expectCreateDeploymentAction(deploy)
+	f.expectUpdateLwStatusAction(lw)
+
+	f.run(ctx, getRef1(lw, t))
+}
+
+func TestDoNothing(t *testing.T) {
+	f := newFixture(t)
+	t.Run("foo", func(t *testing.T) {
+		foo := newFoo("test", int32Ptr(1))
+		_, ctx := ktesting.NewTestContext(t)
+
+		d := newDeployment(foo)
+
+		f.fooLister = append(f.fooLister, foo)
+		f.objects = append(f.objects, foo)
+		f.deploymentLister = append(f.deploymentLister, d)
+		f.kubeobjects = append(f.kubeobjects, d)
+
+		f.expectUpdateFooStatusAction(foo)
+		f.run(ctx, getRef(foo, t))
+	})
+
+	t.Run("lw", func(t *testing.T) {
+		f := newFixture(t)
+		lw := newLw("haha", "nginx", int32Ptr(1))
+		_, ctx := ktesting.NewTestContext(t)
+
+		d := newLwDeployment(lw)
+		f.lwLister = append(f.lwLister, lw)
+		f.objects = append(f.objects, lw)
+		f.deploymentLister = append(f.deploymentLister, d)
+		f.kubeobjects = append(f.kubeobjects, d)
+
+		f.expectUpdateLwStatusAction(lw)
+		f.run(ctx, getRef1(lw, t))
+	})
+}
+
+func TestDoNothing2(t *testing.T) {
+	f := newFixture(t)
+	lw := newLw("haha", "nginx", int32Ptr(1))
+	_, ctx := ktesting.NewTestContext(t)
+
+	d := newLwDeployment(lw)
+	f.lwLister = append(f.lwLister, lw)
+	f.objects = append(f.objects, lw)
 	f.deploymentLister = append(f.deploymentLister, d)
 	f.kubeobjects = append(f.kubeobjects, d)
 
-	f.expectUpdateFooStatusAction(foo)
-	f.run(ctx, getRef(foo, t))
+	f.expectUpdateLwStatusAction(lw)
+	f.run(ctx, getRef1(lw, t))
 }
 
 func TestUpdateDeployment(t *testing.T) {
-	f := newFixture(t)
-	foo := newFoo("test", int32Ptr(1))
-	_, ctx := ktesting.NewTestContext(t)
+	t.Run("foo", func(t *testing.T) {
+		f := newFixture(t)
+		foo := newFoo("test", int32Ptr(1))
+		_, ctx := ktesting.NewTestContext(t)
 
-	d := newDeployment(foo)
+		d := newDeployment(foo)
 
-	// Update replicas
-	foo.Spec.Replicas = int32Ptr(2)
-	expDeployment := newDeployment(foo)
+		// Update replicas
+		foo.Spec.Replicas = int32Ptr(2)
+		expDeployment := newDeployment(foo)
 
-	f.fooLister = append(f.fooLister, foo)
-	f.objects = append(f.objects, foo)
-	f.deploymentLister = append(f.deploymentLister, d)
-	f.kubeobjects = append(f.kubeobjects, d)
+		f.fooLister = append(f.fooLister, foo)
+		f.objects = append(f.objects, foo)
+		f.deploymentLister = append(f.deploymentLister, d)
+		f.kubeobjects = append(f.kubeobjects, d)
 
-	f.expectUpdateFooStatusAction(foo)
-	f.expectUpdateDeploymentAction(expDeployment)
-	f.run(ctx, getRef(foo, t))
+		f.expectUpdateFooStatusAction(foo)
+		f.expectUpdateDeploymentAction(expDeployment)
+		f.run(ctx, getRef(foo, t))
+	})
+
+	t.Run("lw", func(t *testing.T) {
+		f := newFixture(t)
+		lw := newLw("test", "nginx", int32Ptr(1))
+		_, ctx := ktesting.NewTestContext(t)
+
+		d := newLwDeployment(lw)
+
+		// Update replicas
+		lw.Spec.Replicas = int32Ptr(2)
+		expDeployment := newLwDeployment(lw)
+
+		f.lwLister = append(f.lwLister, lw)
+		f.objects = append(f.objects, lw)
+		f.deploymentLister = append(f.deploymentLister, d)
+		f.kubeobjects = append(f.kubeobjects, d)
+
+		f.expectUpdateLwStatusAction(lw)
+		f.expectUpdateDeploymentAction(expDeployment)
+		f.run(ctx, getRef1(lw, t))
+	})
 }
 
 func TestNotControlledByUs(t *testing.T) {
-	f := newFixture(t)
-	foo := newFoo("test", int32Ptr(1))
-	_, ctx := ktesting.NewTestContext(t)
+	t.Run("foo", func(t *testing.T) {
+		f := newFixture(t)
+		foo := newFoo("test", int32Ptr(1))
+		_, ctx := ktesting.NewTestContext(t)
 
-	d := newDeployment(foo)
+		d := newDeployment(foo)
 
-	d.ObjectMeta.OwnerReferences = []metav1.OwnerReference{}
+		d.ObjectMeta.OwnerReferences = []metav1.OwnerReference{}
 
-	f.fooLister = append(f.fooLister, foo)
-	f.objects = append(f.objects, foo)
-	f.deploymentLister = append(f.deploymentLister, d)
-	f.kubeobjects = append(f.kubeobjects, d)
+		f.fooLister = append(f.fooLister, foo)
+		f.objects = append(f.objects, foo)
+		f.deploymentLister = append(f.deploymentLister, d)
+		f.kubeobjects = append(f.kubeobjects, d)
 
-	f.runExpectError(ctx, getRef(foo, t))
+		f.runExpectError(ctx, getRef(foo, t))
+	})
+
+	t.Run("lw", func(t *testing.T) {
+		f := newFixture(t)
+		lw := newLw("test", "nginx", int32Ptr(1))
+		_, ctx := ktesting.NewTestContext(t)
+
+		d := newLwDeployment(lw)
+
+		d.ObjectMeta.OwnerReferences = []metav1.OwnerReference{}
+
+		f.lwLister = append(f.lwLister, lw)
+		f.objects = append(f.objects, lw)
+		f.deploymentLister = append(f.deploymentLister, d)
+		f.kubeobjects = append(f.kubeobjects, d)
+
+		f.runExpectError(ctx, getRef1(lw, t))
+	})
 }
 
 func int32Ptr(i int32) *int32 { return &i }

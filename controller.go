@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"k8s.io/sample-controller/pkg/apis/lwcontroller/v1alpha1"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -42,7 +43,9 @@ import (
 	samplev1alpha1 "k8s.io/sample-controller/pkg/apis/samplecontroller/v1alpha1"
 	clientset "k8s.io/sample-controller/pkg/generated/clientset/versioned"
 	samplescheme "k8s.io/sample-controller/pkg/generated/clientset/versioned/scheme"
+	lwInformers "k8s.io/sample-controller/pkg/generated/informers/externalversions/lwcontroller/v1alpha1"
 	informers "k8s.io/sample-controller/pkg/generated/informers/externalversions/samplecontroller/v1alpha1"
+	lwListers "k8s.io/sample-controller/pkg/generated/listers/lwcontroller/v1alpha1"
 	listers "k8s.io/sample-controller/pkg/generated/listers/samplecontroller/v1alpha1"
 )
 
@@ -77,6 +80,8 @@ type Controller struct {
 	foosLister        listers.FooLister
 	foosSynced        cache.InformerSynced
 
+	lwLister lwListers.LwLister
+	lwSynced cache.InformerSynced
 	// workqueue is a rate limited work queue. This is used to queue work to be
 	// processed instead of performing it as soon as a change happens. This
 	// means we can ensure we only process a fixed amount of resources at a
@@ -94,7 +99,8 @@ func NewController(
 	kubeclientset kubernetes.Interface,
 	sampleclientset clientset.Interface,
 	deploymentInformer appsinformers.DeploymentInformer,
-	fooInformer informers.FooInformer) *Controller {
+	fooInformer informers.FooInformer,
+	lwInformer lwInformers.LwInformer) *Controller {
 	logger := klog.FromContext(ctx)
 
 	// Create event broadcaster
@@ -117,15 +123,24 @@ func NewController(
 		sampleclientset:   sampleclientset,
 		deploymentsLister: deploymentInformer.Lister(),
 		deploymentsSynced: deploymentInformer.Informer().HasSynced,
-		foosLister:        fooInformer.Lister(),
-		foosSynced:        fooInformer.Informer().HasSynced,
-		workqueue:         workqueue.NewTypedRateLimitingQueue(ratelimiter),
-		recorder:          recorder,
+		//foosLister:        fooInformer.Lister(),
+		//foosSynced:        fooInformer.Informer().HasSynced,
+		lwLister:  lwInformer.Lister(),
+		lwSynced:  lwInformer.Informer().HasSynced,
+		workqueue: workqueue.NewTypedRateLimitingQueue(ratelimiter),
+		recorder:  recorder,
 	}
 
 	logger.Info("Setting up event handlers")
 	// Set up an event handler for when Foo resources change
-	fooInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	//fooInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	//	AddFunc: controller.enqueueFoo,
+	//	UpdateFunc: func(old, new interface{}) {
+	//		controller.enqueueFoo(new)
+	//	},
+	//})
+
+	lwInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.enqueueFoo,
 		UpdateFunc: func(old, new interface{}) {
 			controller.enqueueFoo(new)
@@ -170,7 +185,7 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	// Wait for the caches to be synced before starting workers
 	logger.Info("Waiting for informer caches to sync")
 
-	if ok := cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.foosSynced); !ok {
+	if ok := cache.WaitForCacheSync(ctx.Done(), c.deploymentsSynced, c.lwSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 
@@ -193,6 +208,9 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 func (c *Controller) runWorker(ctx context.Context) {
 	for c.processNextWorkItem(ctx) {
 	}
+}
+
+func (c *Controller) name() {
 }
 
 // processNextWorkItem will read a single work item off the workqueue and
@@ -239,6 +257,23 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 // converge the two. It then updates the Status block of the Foo resource
 // with the current status of the resource.
 func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName) error {
+	//var errList []error
+	//err := c.syncFoo(ctx, objectRef)
+	//if err != nil {
+	//	errList = append(errList, err)
+	//}
+	err := c.syncLw(ctx, objectRef)
+	if err != nil {
+		//errList = append(errList, err)
+		return err
+	}
+	//if len(errList) == 2 {
+	//	return fmt.Errorf("error syncing foo: %v", errList)
+	//}
+	return nil
+}
+
+func (c *Controller) syncFoo(ctx context.Context, objectRef cache.ObjectName) error {
 	logger := klog.LoggerWithValues(klog.FromContext(ctx), "objectRef", objectRef)
 
 	// Get the Foo resource with this namespace/name
@@ -247,7 +282,7 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		// The Foo resource may no longer exist, in which case we stop
 		// processing.
 		if errors.IsNotFound(err) {
-			utilruntime.HandleErrorWithContext(ctx, err, "Foo referenced by item in work queue no longer exists", "objectReference", objectRef)
+			logger.Error(fmt.Errorf("foo referenced by item in work queue no longer exists, objectReference"), objectRef.String())
 			return nil
 		}
 
@@ -259,8 +294,7 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 		// We choose to absorb the error here as the worker would requeue the
 		// resource otherwise. Instead, the next time the resource is updated
 		// the resource will be queued again.
-		utilruntime.HandleErrorWithContext(ctx, nil, "Deployment name missing from object reference", "objectReference", objectRef)
-		return nil
+		return fmt.Errorf("deployment name missing from object reference, objectReference: %s", objectRef)
 	}
 
 	// Get the deployment with the name specified in Foo.spec
@@ -311,6 +345,121 @@ func (c *Controller) syncHandler(ctx context.Context, objectRef cache.ObjectName
 	return nil
 }
 
+func (c *Controller) syncLw(ctx context.Context, objectRef cache.ObjectName) error {
+	logger := klog.LoggerWithValues(klog.FromContext(ctx), "objectRef", objectRef)
+
+	// Get the lw resource with this namespace/name
+	lw, err := c.lwLister.Lws(objectRef.Namespace).Get(objectRef.Name)
+	if err != nil {
+		// The Foo resource may no longer exist, in which case we stop
+		// processing.
+		if errors.IsNotFound(err) {
+			logger.Error(fmt.Errorf("lw referenced by item in work queue no longer exists, objectReference"), objectRef.String())
+			return nil
+		}
+
+		return err
+	}
+	if lw.Spec.TargetRef.Kind == "Deployment" {
+		deploymentName := lw.Spec.TargetRef.Name
+		if deploymentName == "" {
+			// We choose to absorb the error here as the worker would requeue the
+			// resource otherwise. Instead, the next time the resource is updated
+			// the resource will be queued again.
+			return fmt.Errorf("deployment name missing from object reference, objectReference: %s", objectRef)
+		}
+
+		// Get the deployment with the name specified in Foo.spec
+		deployment, err := c.deploymentsLister.Deployments(lw.Namespace).Get(deploymentName)
+		// If the resource doesn't exist, we'll create it
+		if errors.IsNotFound(err) {
+			deployment, err = c.kubeclientset.AppsV1().Deployments(lw.Namespace).Create(ctx, newLwDeployment(lw), metav1.CreateOptions{FieldManager: FieldManager})
+		}
+
+		// If an error occurs during Get/Create, we'll requeue the item so we can
+		// attempt processing again later. This could have been caused by a
+		// temporary network failure, or any other transient reason.
+		if err != nil {
+			return err
+		}
+
+		// If the Deployment is not controlled by this Foo resource, we should log
+		// a warning to the event recorder and return error msg.
+		if !metav1.IsControlledBy(deployment, lw) {
+			msg := fmt.Sprintf(MessageResourceExists, deployment.Name)
+			c.recorder.Event(lw, corev1.EventTypeWarning, ErrResourceExists, msg)
+			return fmt.Errorf("%s", msg)
+		}
+
+		// If this number of the replicas on the Foo resource is specified, and the
+		// number does not equal the current desired replicas on the Deployment, we
+		// should update the Deployment resource.
+		if lw.Spec.Replicas != nil && *lw.Spec.Replicas != *deployment.Spec.Replicas {
+			logger.V(4).Info("Update deployment resource", "currentReplicas", *deployment.Spec.Replicas, "desiredReplicas", lw.Spec.Replicas)
+			deployment, err = c.kubeclientset.AppsV1().Deployments(lw.Namespace).Update(ctx, newLwDeployment(lw), metav1.UpdateOptions{FieldManager: FieldManager})
+		}
+
+		// If an error occurs during Update, we'll requeue the item so we can
+		// attempt processing again later. This could have been caused by a
+		// temporary network failure, or any other transient reason.
+		if err != nil {
+			return err
+		}
+
+		// Finally, we update the status block of the Foo resource to reflect the
+		// current state of the world
+		err = c.updateLwStatus(ctx, lw, deployment)
+		if err != nil {
+			return err
+		}
+
+		c.recorder.Event(lw, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
+	} else if lw.Spec.TargetRef.Kind == "ConfigMap" {
+		//
+		if lw.Spec.TargetNs == nil {
+			return fmt.Errorf("targetNs missing from object reference, objectReference: %s", objectRef)
+		}
+
+		sourceCm, err := c.kubeclientset.CoreV1().ConfigMaps(lw.Namespace).Get(ctx, lw.Spec.TargetRef.Name, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			_, err = c.kubeclientset.CoreV1().ConfigMaps(lw.Namespace).Create(ctx, newConfigMap(lw), metav1.CreateOptions{FieldManager: FieldManager})
+			if err != nil {
+				return fmt.Errorf("error creating ConfigMap: %w", err)
+			}
+		} else {
+			sourceCm.Data = *lw.Spec.Data
+			_, err = c.kubeclientset.CoreV1().ConfigMaps(lw.Namespace).Update(ctx, sourceCm, metav1.UpdateOptions{})
+			if err != nil {
+				return fmt.Errorf("error updating ConfigMap: %w", err)
+			}
+		}
+		//var count int
+		for _, ns := range lw.Spec.TargetNs {
+			cmName := lw.Spec.TargetRef.Name
+			cm, err := c.kubeclientset.CoreV1().ConfigMaps(ns).Get(ctx, cmName, metav1.GetOptions{})
+			if err != nil {
+				logger.Error(err, "Failed to get ConfigMap", "ConfigMap", ns)
+				continue
+			}
+			//if !metav1.IsControlledBy(cm, lw) {
+			//	msg := fmt.Sprintf(MessageResourceExists, cm.Name)
+			//	c.recorder.Event(lw, corev1.EventTypeWarning, ErrResourceExists, msg)
+			//	continue
+			//}
+			cm.Data = sourceCm.Data
+			_, err = c.kubeclientset.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+			if err != nil {
+				logger.Error(err, "Failed to update ConfigMap", "ConfigMap", ns)
+				continue
+			}
+		}
+		//if err := c.updateLwStatus(ctx,lw,)
+		c.recorder.Event(lw, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
+	}
+
+	return nil
+}
+
 func (c *Controller) updateFooStatus(ctx context.Context, foo *samplev1alpha1.Foo, deployment *appsv1.Deployment) error {
 	// NEVER modify objects from the store. It's a read-only, local cache.
 	// You can use DeepCopy() to make a deep copy of original object and modify this copy
@@ -322,6 +471,34 @@ func (c *Controller) updateFooStatus(ctx context.Context, foo *samplev1alpha1.Fo
 	// UpdateStatus will not allow changes to the Spec of the resource,
 	// which is ideal for ensuring nothing other than resource status has been updated.
 	_, err := c.sampleclientset.SamplecontrollerV1alpha1().Foos(foo.Namespace).UpdateStatus(ctx, fooCopy, metav1.UpdateOptions{FieldManager: FieldManager})
+	return err
+}
+
+func (c *Controller) updateLwStatus(ctx context.Context, lw *v1alpha1.Lw, deployment *appsv1.Deployment) error {
+	// NEVER modify objects from the store. It's a read-only, local cache.
+	// You can use DeepCopy() to make a deep copy of original object and modify this copy
+	// Or create a copy manually for better performance
+	lwCopy := lw.DeepCopy()
+	lwCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
+	// If the CustomResourceSubresources feature gate is not enabled,
+	// we must use Update instead of UpdateStatus to update the Status block of the Foo resource.
+	// UpdateStatus will not allow changes to the Spec of the resource,
+	// which is ideal for ensuring nothing other than resource status has been updated.
+	_, err := c.sampleclientset.LwcontrollerV1alpha1().Lws(lw.Namespace).UpdateStatus(ctx, lwCopy, metav1.UpdateOptions{FieldManager: FieldManager})
+	return err
+}
+
+func (c *Controller) updateLwConfigStatus(ctx context.Context, lw *v1alpha1.Lw, count int32) error {
+	// NEVER modify objects from the store. It's a read-only, local cache.
+	// You can use DeepCopy() to make a deep copy of original object and modify this copy
+	// Or create a copy manually for better performance
+	lwCopy := lw.DeepCopy()
+	lwCopy.Status.AvailableReplicas = count
+	// If the CustomResourceSubresources feature gate is not enabled,
+	// we must use Update instead of UpdateStatus to update the Status block of the Foo resource.
+	// UpdateStatus will not allow changes to the Spec of the resource,
+	// which is ideal for ensuring nothing other than resource status has been updated.
+	_, err := c.sampleclientset.LwcontrollerV1alpha1().Lws(lw.Namespace).UpdateStatus(ctx, lwCopy, metav1.UpdateOptions{FieldManager: FieldManager})
 	return err
 }
 
@@ -417,5 +594,65 @@ func newDeployment(foo *samplev1alpha1.Foo) *appsv1.Deployment {
 				},
 			},
 		},
+	}
+}
+
+// newLwDeployment creates a new Deployment for a Foo resource. It also sets
+// the appropriate OwnerReferences on the resource so handleObject can discover
+// the Foo resource that 'owns' it.
+func newLwDeployment(lw *v1alpha1.Lw) *appsv1.Deployment {
+	labels := map[string]string{
+		"app":        "nginx",
+		"controller": lw.Name,
+	}
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lw.Spec.TargetRef.Name,
+			Namespace: lw.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(lw, v1alpha1.SchemeGroupVersion.WithKind("Lw")),
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: lw.Spec.Replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "nginx",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func newConfigMap(lw *v1alpha1.Lw) *corev1.ConfigMap {
+	labels := map[string]string{
+		"controller": lw.Name,
+	}
+	data := make(map[string]string)
+	if lw.Spec.Data == nil {
+		data["data"] = "{full this}"
+		lw.Spec.Data = &data
+	}
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      lw.Spec.TargetRef.Name,
+			Namespace: lw.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(lw, v1alpha1.SchemeGroupVersion.WithKind("Lw")),
+			},
+		},
+		Data: *lw.Spec.Data,
 	}
 }
