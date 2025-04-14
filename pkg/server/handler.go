@@ -11,6 +11,7 @@ import (
 	"k8s.io/sample-controller/pkg/controller"
 	"k8s.io/sample-controller/pkg/informers"
 	"k8s.io/sample-controller/utils"
+	"os"
 )
 
 type handler struct {
@@ -19,7 +20,7 @@ type handler struct {
 }
 
 func InstallHandler(group *gin.RouterGroup, k8sClient *kubernetes.Clientset) {
-	redisClient, err := utils.NewRedisClient(context.Background(), utils.RedisConfig{Addr: ""})
+	redisClient, err := utils.NewRedisClient(context.Background(), utils.RedisConfig{Addr: os.Getenv("REDIS_ADDR")})
 	if err != nil {
 		panic(err)
 	}
