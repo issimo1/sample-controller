@@ -19,7 +19,7 @@ type handler struct {
 }
 
 func InstallHandler(group *gin.RouterGroup, k8sClient *kubernetes.Clientset) {
-	redisClient, err := utils.NewRedisClient(context.Background(), utils.RedisConfig{Addr: "111.229.169.147:6379"})
+	redisClient, err := utils.NewRedisClient(context.Background(), utils.RedisConfig{Addr: ""})
 	if err != nil {
 		panic(err)
 	}
