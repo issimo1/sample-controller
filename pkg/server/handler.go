@@ -5,28 +5,31 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
+	"io"
 	v1 "k8s.io/api/core/v1"
+	v2 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/sample-controller/pkg/controller"
 	"k8s.io/sample-controller/pkg/informers"
 	"k8s.io/sample-controller/utils"
+	"net/http"
 	"os"
 )
 
 type handler struct {
-	redis  *redis.Client
-	client *kubernetes.Clientset
+	redis         *redis.Client
+	clientManager *ClientManager
 }
 
-func InstallHandler(group *gin.RouterGroup, k8sClient *kubernetes.Clientset) {
+func InstallHandler(group *gin.RouterGroup, cfg map[string]*kubernetes.Clientset) {
 	redisClient, err := utils.NewRedisClient(context.Background(), utils.RedisConfig{Addr: os.Getenv("REDIS_ADDR")})
 	if err != nil {
-		panic(err)
+		//panic(err)
 	}
 	h := &handler{
-		client: k8sClient,
-		redis:  redisClient,
+		clientManager: NewClientManager(cfg),
+		redis:         redisClient,
 	}
 	group.POST("/login", h.login)
 	router := group.Group("/v1")
@@ -38,6 +41,10 @@ func InstallHandler(group *gin.RouterGroup, k8sClient *kubernetes.Clientset) {
 	service.GET("get", h.getService)
 	service.GET("update", h.updateService)
 	service.GET("testCacheIndexer", h.subSvc)
+	service.GET("testPool", h.getResource)
+
+	test := group.Group("/v2")
+	test.GET("testDelay", h.delayServer)
 }
 
 // SetService auto handler redis set key,value,
@@ -143,4 +150,62 @@ func (h *handler) subSvc(c *gin.Context) {
 		return
 	}
 	c.JSON(200, nil)
+}
+
+func (h *handler) getResource(c *gin.Context) {
+	var req ReqResource
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+	var errors field.ErrorList
+	type resp struct {
+		Name string `json:"name"`
+	}
+	respMap := make(map[string]map[string]resp)
+	for namespace, clusters := range req.Data {
+		tmp := make(map[string]resp)
+		for _, cluster := range clusters {
+			client := h.clientManager.Get(cluster)
+			if client == nil {
+				errors = append(errors, field.Invalid(field.NewPath("poll", "cluster"), namespace, cluster))
+				continue
+			}
+			services, err := client.CoreV1().Services(namespace).List(context.Background(), v2.ListOptions{})
+			if err != nil {
+				errors = append(errors, field.Invalid(field.NewPath("list", "service"), namespace, cluster))
+				continue
+			}
+			for _, service := range services.Items {
+				tmp[cluster] = resp{
+					Name: service.Name,
+				}
+			}
+			h.clientManager.Put(cluster, client)
+		}
+		respMap[namespace] = tmp
+	}
+	c.JSON(200, respMap)
+}
+
+func (h *handler) delayServer(c *gin.Context) {
+
+}
+
+func repeat(depth int) (interface{}, error) {
+	if depth <= 0 {
+		return nil, nil
+	}
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:8980/v1alpha/getLogs?time=%d", depth))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 {
+		return repeat(depth / 2)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return body, nil
 }

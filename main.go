@@ -96,7 +96,9 @@ func main() {
 	go svcController.Run(ctx)
 	go svcController1.Run(start, logger)
 
-	server.InstallHandler(r.Group(""), kubeClient)
+	mp := make(map[string]*kubernetes.Clientset)
+	mp["mt"] = kubeClient
+	server.InstallHandler(r.Group(""), mp)
 	serve := &http.Server{
 		Addr:    ":8080",
 		Handler: r,
