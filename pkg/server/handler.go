@@ -3,26 +3,31 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
+	"k8s.io/sample-controller/cfg"
+	"k8s.io/sample-controller/dao"
+	"net/http"
+	"os"
+
+	"k8s.io/sample-controller/pkg/controller"
+	"k8s.io/sample-controller/pkg/informers"
+	"k8s.io/sample-controller/utils"
+
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
-	"io"
 	v1 "k8s.io/api/core/v1"
 	v2 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/sample-controller/pkg/controller"
-	"k8s.io/sample-controller/pkg/informers"
-	"k8s.io/sample-controller/utils"
-	"net/http"
-	"os"
 )
 
 type handler struct {
 	redis         *redis.Client
 	clientManager *ClientManager
+	dao           *dao.Dao
 }
 
-func InstallHandler(group *gin.RouterGroup, cfg map[string]*kubernetes.Clientset) {
+func InstallHandler(group *gin.RouterGroup, cfg map[string]*kubernetes.Clientset, c *cfg.Config) {
 	redisClient, err := utils.NewRedisClient(context.Background(), utils.RedisConfig{Addr: os.Getenv("REDIS_ADDR")})
 	if err != nil {
 		//panic(err)
@@ -30,6 +35,7 @@ func InstallHandler(group *gin.RouterGroup, cfg map[string]*kubernetes.Clientset
 	h := &handler{
 		clientManager: NewClientManager(cfg),
 		redis:         redisClient,
+		dao:           dao.NewDao(),
 	}
 	group.POST("/login", h.login)
 	router := group.Group("/v1")
@@ -42,9 +48,14 @@ func InstallHandler(group *gin.RouterGroup, cfg map[string]*kubernetes.Clientset
 	service.GET("update", h.updateService)
 	service.GET("testCacheIndexer", h.subSvc)
 	service.GET("testPool", h.getResource)
+	service.POST("create", h.Create)
+	service.POST("update", h.UpdateAndInsert)
 
 	test := group.Group("/v2")
 	test.GET("testDelay", h.delayServer)
+
+	prom := group.Group("/v1")
+	RegisterPrometheusHandler(h.clientManager, prom, c)
 }
 
 // SetService auto handler redis set key,value,

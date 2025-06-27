@@ -24,6 +24,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	config "k8s.io/sample-controller/cfg"
+	"k8s.io/sample-controller/dao"
 	mtcontroller "k8s.io/sample-controller/pkg/controller"
 	mtinformer "k8s.io/sample-controller/pkg/informers"
 	"k8s.io/sample-controller/pkg/server"
@@ -98,7 +100,13 @@ func main() {
 
 	mp := make(map[string]*kubernetes.Clientset)
 	mp["mt"] = kubeClient
-	server.InstallHandler(r.Group(""), mp)
+	conf := config.InitDefaultConfig(cfg)
+	err = dao.InitMysql(conf.MysqlConfig)
+	if err != nil {
+		logger.Error(err, "Error init mysql")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
+	server.InstallHandler(r.Group(""), mp, conf)
 	serve := &http.Server{
 		Addr:    ":8080",
 		Handler: r,
